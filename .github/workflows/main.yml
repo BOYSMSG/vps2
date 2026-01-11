@@ -1,0 +1,46 @@
+name: Persistent RDP
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [restart-rdp]
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    steps:
+      - name: Configure Core RDP
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Create User
+        run: |
+          $password = "YourSecurePass123!" # Or generate one
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP_User" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP_User"
+
+      - name: Install & Connect Tailscale
+        run: |
+          # Use a STATIC hostname so MagicDNS finds it every time
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-persistent-rdp
+
+      - name: The 5-Hour Loop & Auto-Restart
+        shell: powershell
+        run: |
+          Write-Host "RDP is ready. Connect to: my-persistent-rdp"
+          
+          # Wait 5.5 hours then trigger the next run
+          Start-Sleep -Seconds 19800 
+          
+          $url = "https://api.github.com/repos/${{ github.repository }}/dispatches"
+          $body = @{ event_type = "restart-rdp" } | ConvertTo-Json
+          Invoke-RestMethod -Uri $url -Method Post -Body $body -Headers @{
+            "Authorization" = "token ${{ secrets.GH_PAT }}"
+            "Accept" = "application/vnd.github.v3+json"
+          }
+          exit 0
